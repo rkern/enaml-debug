@@ -1,0 +1,178 @@
+
+from enaml_debug.debug_layout import (ComponentModel, ConstraintsModel,
+    ConstraintsOverlay, DebugLayout, ViewOutlines, debugize_container,
+    traverse_layout)
+
+
+enamldef ComponentTable(MainWindow):
+    id: main
+    attr components
+    attr selection_obj
+    attr item_model : ComponentModel = ComponentModel(components)
+
+    title = 'View Components'
+
+    Container:
+        constraints = [
+            vbox(tv),
+            width >= 400,
+            height >= 250,
+        ]
+        TableView:
+            id: tv
+            hug = ('ignore', 'ignore')
+            item_model = main.item_model
+            initialized ::
+                self.toolkit_widget.resizeColumnsToContents()
+                self.toolkit_widget.resizeRowsToContents()
+            RowSelectionModel:
+                selection_mode = 'extended'
+                selected_rows := main.selection_obj.selected_component_indices
+
+
+enamldef ConstraintsTable(MainWindow):
+    id: main
+    attr layout_mgr
+    attr selection_obj
+    attr item_model : ConstraintsModel = ConstraintsModel(layout_mgr)
+
+    title = 'View Constraints'
+
+    Container:
+        constraints = [
+            vbox(tv),
+            width >= 800,
+            height >= 600,
+        ]
+        TableView:
+            id: tv
+            hug = ('ignore', 'ignore')
+            item_model = main.item_model
+            initialized ::
+                self.toolkit_widget.resizeColumnsToContents()
+                self.toolkit_widget.resizeRowsToContents()
+            RowSelectionModel:
+                selection_mode = 'extended'
+                selected_rows := main.selection_obj.selected_constraint_indices
+
+
+enamldef Tables(MainWindow):
+    id: main
+    attr layout_mgr
+    attr components
+    attr selection_obj
+    attr component_model : ComponentModel = ComponentModel(components)
+    attr constraints_model : ConstraintsModel = ConstraintsModel(layout_mgr)
+
+    title = u'Components and Constraints'
+    Splitter:
+        Container:
+            constraints = [
+                vbox(*self.constraints_children),
+                width >= 400,
+            ]
+            Label:
+                text = u'Components:'
+            TableView:
+                id: tv
+                hug = ('ignore', 'ignore')
+                item_model = main.component_model
+                initialized ::
+                    self.toolkit_widget.resizeColumnsToContents()
+                    self.toolkit_widget.resizeRowsToContents()
+                RowSelectionModel:
+                    selection_mode = 'extended'
+                    selected_rows := main.selection_obj.selected_component_indices
+        Container:
+            constraints = [
+                vbox(*self.constraints_children),
+                width >= 600,
+                height >= 600,
+            ]
+            Label:
+                text = u'Constraints:'
+            TableView:
+                id: tv
+                hug = ('ignore', 'ignore')
+                item_model = main.constraints_model
+                initialized ::
+                    self.toolkit_widget.resizeColumnsToContents()
+                    self.toolkit_widget.resizeRowsToContents()
+                RowSelectionModel:
+                    selection_mode = 'extended'
+                    selected_rows := main.selection_obj.selected_constraint_indices
+
+
+enamldef DebugLayoutUI(MainWindow):
+    id: main
+    attr root
+    attr components : list = list(traverse_layout(root))
+    attr view_outlines : ViewOutlines = ViewOutlines.fromcomponents(components)
+    attr tables : Tables = Tables(components=components)
+#    attr component_table : ComponentTable = ComponentTable(components=components)
+#    attr constraints_table : ConstraintsTable = ConstraintsTable()
+    attr constraints_overlay : ConstraintsOverlay
+
+    attr selected_component_indices : list = []
+    attr selected_components : list = []
+    attr selected_constraint_indices : list = []
+    attr selected_constraints : list = []
+
+    title = 'Debug Layout'
+
+    initialized ::
+        debugize_container(self.root)
+        self.tables.selection_obj = self
+        self.tables.layout_mgr = self.root.layout_manager
+#        self.component_table.selection_obj = self
+#        self.constraints_table.selection_obj = self
+#        self.constraints_table.layout_mgr = self.root.layout_manager
+        self.root.layout_manager.on_trait_change(self.view_outlines.update_from_enaml, 'layout_event')
+        self.root.layout_manager.on_trait_change(self.tables.component_model.update, 'layout_event')
+        self.constraints_overlay = ConstraintsOverlay(component=self.view_outlines, layout_mgr=self.root.layout_manager)
+        self.view_outlines.overlays.append(self.constraints_overlay)
+
+    selected_component_indices ::
+        self.selected_components = [self.components[i] for i in self.selected_component_indices]
+    selected_components ::
+        self.view_outlines.highlight(self.selected_components)
+        self.tables.constraints_model.filter(self.selected_components)
+
+    selected_constraint_indices ::
+        self.selected_constraints = [self.tables.constraints_model.filtered_constraints[i] for i in self.selected_constraint_indices]
+    selected_constraints ::
+        self.constraints_overlay.selected_constraints = self.selected_constraints
+
+    MenuBar:
+        Menu:
+            title = u'Tables'
+#            Action:
+#                text = u'Show Components'
+#                triggered ::
+#                    main.component_table.show()
+#            Action:
+#                text = u'Show Constraints'
+#                triggered ::
+#                    main.constraints_table.show()
+#            Action:
+#                separator = True
+            Action:
+                text = u'Show Both'
+                triggered ::
+                    main.tables.show()
+#                    main.component_table.show()
+#                    main.constraints_table.show()
+
+    Container:
+        constraints = [
+            horizontal(left, _space_==0, root, _space_==0, enable_view, _space_==0, right),
+            vertical(top, _space_==0, enable_view, _space_==0, bottom),
+            vertical(top, _space_==0, root, _space_==0, bottom),
+            root.width == enable_view.width,
+            root.height == enable_view.height,
+        ]
+        Include:
+            components = [root]
+        EnableCanvas:
+            id: enable_view
+            component = view_outlines
