@@ -235,16 +235,16 @@ class ComponentModel(AbstractTableModel):
         return u'{0:x}'.format(id(component))
 
     def _get_top(self, component):
-        return unicode(component.top.value)
+        return unicode(int(round(component.top.value)))
 
     def _get_left(self, component):
-        return unicode(component.left.value)
+        return unicode(int(round(component.left.value)))
 
     def _get_width(self, component):
-        return unicode(component.width.value)
+        return unicode(int(round(component.width.value)))
 
     def _get_height(self, component):
-        return unicode(component.height.value)
+        return unicode(int(round(component.height.value)))
 
 
 class ConstraintsModel(AbstractTableModel):
