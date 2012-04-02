@@ -5,14 +5,14 @@
 """ Command-line tool to debug Enaml layouts.
 
 """
+from __future__ import absolute_import
+
 import optparse
-import os
 import sys
-import types
 
 from enaml import imports, default_toolkit, wx_toolkit, qt_toolkit
-from enaml.core.parser import parse
-from enaml.core.enaml_compiler import EnamlCompiler
+
+from .debug_layout import read_component
 
 
 toolkits = {
@@ -40,34 +40,17 @@ def main():
     else:
         enaml_file = args[0]
 
-    with open(enaml_file) as f:
-        enaml_code = f.read()
-    
-    # Parse and compile the Enaml source into a code object    
-    ast = parse(enaml_code, filename=enaml_file)
-    code = EnamlCompiler.compile(ast, enaml_file)
-
-    # Create a proper module in which to execute the compiled code so
-    # that exceptions get reported with better meaning
-    module = types.ModuleType('__main__')
-    module.__file__ = enaml_file
-    ns = module.__dict__
-
-    sys.path.insert(0, os.path.dirname(enaml_file))
-    with imports():
-        exec code in ns
-        from enaml_debug.debug_ui import DebugLayoutUI
-
     with toolkits[options.toolkit]():
-        requested = options.component
-        if requested in ns:
-            component = ns[requested]
-            window = DebugLayoutUI(root=component().children[0])
-            window.show()
-        else:
-            msg = "Could not find component '%s'" % options.component
-            print msg
+        try:
+            factory, module = read_component(enaml_file, requested=options.component)
+        except NameError, e:
+            raise SystemExit('Error: ' + str(e))
 
+        with imports():
+            from enaml_debug.debug_ui import DebugLayoutUI
+
+        window = DebugLayoutUI(root=factory().central_widget)
+        window.show()
 
 if __name__ == '__main__':
     main()

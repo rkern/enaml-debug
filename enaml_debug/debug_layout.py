@@ -1,4 +1,7 @@
 from collections import defaultdict
+import os
+import sys
+import types
 
 from enable.api import (AbstractOverlay, ColorTrait,
     Component as EnableComponent, Container as EnableContainer, LineStyle,
@@ -8,11 +11,14 @@ from traits.api import (Any, Bool, Float, HasTraits, Instance, List, Property,
     NO_COMPARE, on_trait_change)
 
 from casuarius import medium
+from enaml import imports
 from enaml.components.constraints_widget import ConstraintsWidget
 from enaml.components.container import Container
+from enaml.core.enaml_compiler import EnamlCompiler
+from enaml.core.parser import parse
 from enaml.core.trait_types import EnamlEvent
-from enaml.item_models.abstract_item_model import (ALIGN_LEFT, ALIGN_RIGHT, ALIGN_VCENTER,
-    AbstractTableModel)
+from enaml.item_models.abstract_item_model import (ALIGN_LEFT, ALIGN_RIGHT,
+    ALIGN_VCENTER, AbstractTableModel)
 from enaml.layout.constraints_layout import ConstraintsLayout
 from enaml.styling.font import Font
 
@@ -438,3 +444,56 @@ def traverse_layout(root):
                 yield c
         elif isinstance(child, ConstraintsWidget):
             yield child
+
+
+def read_component(enaml_file, requested='Main'):
+    """ Read a component from an .enaml file.
+
+    Parameters
+    ----------
+    enaml_file : str
+        The name of the .enaml file.
+    requested : str, optional
+        The name of the MainWindow holding the root Container.
+
+    Returns
+    -------
+    factory : callable
+        The factory for the MainWindow, usually a MainWindow
+        EnamlDefinition.
+    module : module
+        The module object from the .enaml file itself. Keep this alive
+        at least until after the component gets constructed.
+
+    Raises
+    ------
+    NameError if the requested component does not exist in the module.
+    """
+    with open(enaml_file) as f:
+        enaml_code = f.read()
+
+    # Parse and compile the Enaml source into a code object
+    ast = parse(enaml_code, filename=enaml_file)
+    code = EnamlCompiler.compile(ast, enaml_file)
+
+    # Create a proper module in which to execute the compiled code so
+    # that exceptions get reported with better meaning
+    module = types.ModuleType('__main__')
+    module.__file__ = enaml_file
+    ns = module.__dict__
+
+    old_path = sys.path[:]
+    sys.path.insert(0, os.path.dirname(enaml_file))
+    with imports():
+        exec code in ns
+    sys.path[:] = old_path
+
+    if requested in ns:
+        factory = ns[requested]
+    else:
+        msg = "Could not find component {0!r}".format(requested)
+        raise NameError(msg)
+
+    return factory, module
+
+
