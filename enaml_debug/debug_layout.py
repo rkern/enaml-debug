@@ -23,9 +23,82 @@ from enaml.layout.constraints_layout import ConstraintsLayout
 from enaml.styling.font import Font
 
 
-TABLE_FONT = Font('Courier')
+# Use a monospaced font for the tables.
+TABLE_FONT = Font('Courier New', point_size=10, family_hint='monospace')
+
+
+class DebugLayout(HasTraits, ConstraintsLayout):
+    """ Sublass ConstraintsLayout to keep around the constraint list and
+    to let us inject our own callback inside the layout edit cycle.
+
+    """
+    current_constraints = List(comparison_mode=NO_COMPARE)
+    layout_event = EnamlEvent()
+
+    def initialize(self, constraints):
+        self.current_constraints = constraints
+        super(DebugLayout, self).initialize(constraints)
+
+    def layout(self, cb, width, height, size, strength=medium, weight=1.0):
+        def f():
+            cb()
+            self.layout_event()
+
+        super(DebugLayout, self).layout(f, width, height, size, strength, weight)
+
+
+class DebugModel(HasTraits):
+    """ Hold the component hierarchy data.
+
+    """
+
+    # The root Container.
+    root = Instance(Container)
+
+    # The full list of components.
+    components = List()
+
+    # The full list of constraints.
+    constraints = List(comparison_mode=NO_COMPARE)
+
+    # The components that are selected.
+    selected_components = List()
+
+    # The constraints that are selected.
+    selected_constraints = List(comparison_mode=NO_COMPARE)
+
+    # Notify that the hierarchy has changed.
+    hierarchy_changed = EnamlEvent()
+
+    # The layout manager for the root.
+    layout_manager = Instance(DebugLayout)
+
+
+    @on_trait_change('root.children*')
+    def _update_components(self):
+        if self.root is None:
+            self.components = []
+        else:
+            self.components = list(traverse_layout(self.root))
+        self.hierarchy_changed()
+
+    def _root_changed(self, new):
+        if new is not None and type(new) is not DebugContainer:
+            debugize_container(new)
+            self.layout_manager = new.layout_manager
+
+    @on_trait_change('layout_manager.current_constraints')
+    def _new_constraints(self):
+        if self.layout_manager is not None:
+            self.constraints = self.layout_manager.current_constraints
+        else:
+            self.constraints = []
+
 
 class Coords(HasTraits):
+    """ Simple holder of box-related data.
+
+    """
     top = Float()
     left = Float()
     width = Float()
@@ -53,6 +126,10 @@ class Coords(HasTraits):
 
 
 class Box(EnableComponent):
+    """ Draw a highlightable box representing the geometry of an Enaml
+    component.
+
+    """
 
     enaml = Instance(ConstraintsWidget)
     highlighted = Bool(False)
@@ -83,7 +160,7 @@ class Box(EnableComponent):
         """ Update the geometry from the Enaml component.
 
         """
-        if self.enaml.abstract_obj.widget is not None:
+        if self.enaml.abstract_obj is not None and self.enaml.abstract_obj.widget is not None:
             coords = self.coords
             coords.left = self.enaml.left.value
             coords.top = self.enaml.top.value
@@ -147,215 +224,75 @@ class Box(EnableComponent):
 
 
 class ViewOutlines(EnableContainer):
+    """ Enable component that shows Boxes for Enaml components.
 
+    """
+
+    model = Instance(DebugModel)
+
+    # No padding.
     padding_left = 0
     padding_right = 0
     padding_top = 0
     padding_bottom = 0
 
-    @classmethod
-    def fromcomponents(cls, components):
-        children = []
-        for component in components:
-            box = Box(enaml=component)
-            children.append(box)
-        self = cls(*children)
-        return self
+    @on_trait_change('model.hierarchy_changed')
+    def _new_components(self):
+        self.remove(*self._components)
+        if self.model is not None:
+            for component in self.model.components:
+                box = Box(enaml=component)
+                self.add(box)
 
+    @on_trait_change('model:layout_manager:layout_event')
     def update_from_enaml(self):
+        """ Update each of the Boxes from their Enaml geometry.
+
+        """
         for box in self.components:
             box.update_from_enaml()
         self.request_redraw()
 
-    def highlight(self, enamls):
-        for box in self.components:
-            box.highlighted = (box.enaml in enamls)
-        self.request_redraw()
-
-    def _bounds_changed(self, old, new):
-        super(ViewOutlines, self)._bounds_changed(old, new)
-
-
-class ComponentModel(AbstractTableModel):
-    def __init__(self, components):
-        self.components = components
-
-        self.columns = [
-            ('Name', 'name'),
-            ('ID', 'id'),
-            ('Left', 'left'),
-            ('Top', 'top'),
-            ('Width', 'width'),
-            ('Height', 'height'),
-        ]
-        self._data = []
-        self.update()
-
-    def column_count(self, parent=None):
-        return len(self.columns)
-
-    def row_count(self, parent=None):
-        return len(self.components)
-
-    def data(self, index):
-        return self._data[index.row][index.column]
-
-    def alignment(self, index):
-        if index.column < 2:
-            return ALIGN_LEFT | ALIGN_VCENTER
-        else:
-            return ALIGN_RIGHT | ALIGN_VCENTER
-
-    def horizontal_header_data(self, section):
-        return self.columns[section][0]
-
-    def font(self, index):
-        return TABLE_FONT
-
-    def update(self):
-        """ Redraw everything.
+    @on_trait_change('model:selected_components')
+    def highlight(self):
+        """ Highlight the selected Enaml components.
 
         """
-        self.begin_reset_model()
-        self._data = []
-        for component in self.components:
-            self._data.append((
-                self._get_name(component),
-                self._get_id(component),
-                self._get_left(component),
-                self._get_top(component),
-                self._get_width(component),
-                self._get_height(component),
-            ))
-
-        self.end_reset_model()
-
-    def _get_name(self, component):
-        if component is self.components[0]:
-            nancestors = 0
-        else:
-            nancestors = len(list(component.traverse_ancestors(self.components[0])))+1
-        return u'{0}{1}'.format(u'\u2003'*nancestors, type(component).__name__)
-
-    def _get_id(self, component):
-        return u'{0:x}'.format(id(component))
-
-    def _get_top(self, component):
-        return unicode(int(round(component.top.value)))
-
-    def _get_left(self, component):
-        return unicode(int(round(component.left.value)))
-
-    def _get_width(self, component):
-        return unicode(int(round(component.width.value)))
-
-    def _get_height(self, component):
-        return unicode(int(round(component.height.value)))
-
-
-class ConstraintsModel(AbstractTableModel):
-    def __init__(self, layout_mgr):
-        self.layout_mgr = layout_mgr
-        self.layout_mgr.on_trait_change(self.update, 'current_constraints')
-        self.layout_mgr.on_trait_change(self.update, 'layout_event')
-
-        self._data = []
-        self._filter_ids = ()
-        self.filtered_constraints = []
-        self.update()
-
-    def row_count(self, parent=None):
-        if parent is not None:
-            return 0
-        else:
-            return len(self._data)
-
-    def column_count(self, parent=None):
-        return 4
-
-    def horizontal_header_data(self, section):
-        return ('Constraint', 'Error', 'Strength', 'Weight')[section]
-
-    def data(self, index):
-        return self._data[index.row][index.column]
-
-    def alignment(self, index):
-        if index.column in (0, 2):
-            return ALIGN_LEFT | ALIGN_VCENTER
-        else:
-            return ALIGN_RIGHT | ALIGN_VCENTER
-
-    def font(self, index):
-        return TABLE_FONT
-
-    def update(self):
-        self.begin_reset_model()
-        if self._filter_ids:
-            self.filtered_constraints = []
-            for cn in self.layout_mgr.current_constraints:
-                for term in cn.lhs.terms + cn.rhs.terms:
-                    if term.var.name.endswith(self._filter_ids):
-                        self.filtered_constraints.append(cn)
-                        break
-        else:
-            self.filtered_constraints = self.layout_mgr.current_constraints
-        self._data = [
-            (unicode(cn), u'{0:.6g}'.format(cn.error) if cn.error > 1e-6 else u'0', unicode(cn.strength.name), unicode(cn.weight))
-            for cn in self.filtered_constraints
-        ]
-        self.end_reset_model()
-
-    def filter(self, components):
-        self._filter_ids = tuple('_{0:x}'.format(id(c)) for c in components)
-        self.update()
-
-
-class DebugLayout(HasTraits, ConstraintsLayout):
-    current_constraints = List()
-    layout_event = EnamlEvent()
-
-    def initialize(self, constraints):
-        self.current_constraints = constraints
-        super(DebugLayout, self).initialize(constraints)
-
-    def layout(self, cb, width, height, size, strength=medium, weight=1.0):
-        def f():
-            cb()
-            self.layout_event()
-
-        super(DebugLayout, self).layout(f, width, height, size, strength, weight)
-
-
-class DebugContainer(Container):
-
-    def transfer_layout_ownership(self, owner):
-        return False
+        for box in self.components:
+            box.highlighted = (box.enaml in self.model.selected_components)
+        self.request_redraw()
 
 
 class ConstraintsOverlay(AbstractOverlay):
+    """ Highlight the selected constraints on the outline view.
 
-    layout_mgr = Instance(DebugLayout)
-    selected_constraints = List(comparison_mode=NO_COMPARE)
+    """
 
+    model = Instance(DebugModel)
+
+    # Map from box name to Coords.
     boxes = Any()
 
+    # Style options for the lines.
     term_color = ColorTrait('lightblue')
     term_line_style = LineStyle('solid')
 
-    @on_trait_change('layout_mgr:layout_event')
+    @on_trait_change('model:layout_manager:layout_event')
     def update_from_enaml(self):
         """ Update the constraints from Enaml.
 
         """
         self.boxes = defaultdict(Coords)
-        if self.layout_mgr is not None:
-            for constraint in self.layout_mgr.current_constraints:
+        layout_mgr = getattr(self.model, 'layout_manager', None)
+        if layout_mgr is not None:
+            for constraint in layout_mgr.current_constraints:
                 for expr in (constraint.lhs, constraint.rhs):
                     for term in expr.terms:
                         name, attr = self.split_var_name(term.var.name)
                         setattr(self.boxes[name], attr, term.var.value)
         self.request_redraw()
 
+    @on_trait_change('model.selected_constraints')
     def _selected_constraints_changed(self):
         self.request_redraw()
 
@@ -368,6 +305,8 @@ class ConstraintsOverlay(AbstractOverlay):
         """ Draws this component overlaid on another component.
 
         """
+        if self.model is None:
+            return
         with gc:
             gc.translate_ctm(0.0, other_component.height)
             gc.scale_ctm(1.0, -1.0)
@@ -375,7 +314,7 @@ class ConstraintsOverlay(AbstractOverlay):
             gc.set_line_dash(self.term_line_style_)
             gc.set_line_width(3)
             term_attrs = set()
-            for constraint in self.selected_constraints:
+            for constraint in self.model.selected_constraints:
                 for expr in (constraint.lhs, constraint.rhs):
                     for term in expr.terms:
                         term_attrs.add(self.split_var_name(term.var.name))
@@ -419,6 +358,179 @@ class ConstraintsOverlay(AbstractOverlay):
         gc.move_to(x0, y)
         gc.line_to(x0+length, y)
 
+
+class ComponentModel(AbstractTableModel):
+    """ Table model for showing the tree of components.
+
+    """
+
+    def __init__(self, debug_model):
+        self.debug_model = debug_model
+
+        self.columns = [
+            ('Name', 'name'),
+            ('ID', 'id'),
+            ('Left', 'left'),
+            ('Top', 'top'),
+            ('Width', 'width'),
+            ('Height', 'height'),
+        ]
+        self._data = []
+        self.update()
+        self.debug_model.on_trait_change(self.update, 'layout_manager:layout_event')
+
+    #### AbstractTableModel interface ########################################
+
+    def column_count(self, parent=None):
+        return len(self.columns)
+
+    def row_count(self, parent=None):
+        return len(self.debug_model.components)
+
+    def data(self, index):
+        return self._data[index.row][index.column]
+
+    def alignment(self, index):
+        if index.column < 2:
+            return ALIGN_LEFT | ALIGN_VCENTER
+        else:
+            return ALIGN_RIGHT | ALIGN_VCENTER
+
+    def horizontal_header_data(self, section):
+        return self.columns[section][0]
+
+    def font(self, index):
+        return TABLE_FONT
+
+    #### ComponentModel interface #############################################
+
+    def update(self):
+        """ Redraw everything.
+
+        """
+        self.begin_reset_model()
+        self._data = []
+        for component in self.debug_model.components:
+            self._data.append((
+                self._get_name(component),
+                self._get_id(component),
+                self._get_left(component),
+                self._get_top(component),
+                self._get_width(component),
+                self._get_height(component),
+            ))
+
+        self.end_reset_model()
+
+    def _get_name(self, component):
+        if component is self.debug_model.components[0]:
+            nancestors = 0
+        else:
+            nancestors = len(list(component.traverse_ancestors(self.debug_model.components[0])))+1
+        return u'{0}{1}'.format(u'\u2003'*nancestors, type(component).__name__)
+
+    def _get_id(self, component):
+        return u'{0:x}'.format(id(component))
+
+    def _get_top(self, component):
+        return unicode(int(round(component.top.value)))
+
+    def _get_left(self, component):
+        return unicode(int(round(component.left.value)))
+
+    def _get_width(self, component):
+        return unicode(int(round(component.width.value)))
+
+    def _get_height(self, component):
+        return unicode(int(round(component.height.value)))
+
+
+class ConstraintsModel(AbstractTableModel):
+    """ Table model for viewing the constraints.
+
+    """
+
+    def __init__(self, debug_model):
+        self.debug_model = debug_model
+        self.debug_model.on_trait_change(self.update, 'constraints')
+        self.debug_model.on_trait_change(self.update, 'layout_manager:layout_event')
+        self.debug_model.on_trait_change(self.filter, 'selected_components')
+
+        self._data = []
+        self._filter_ids = ()
+        self.filtered_constraints = []
+        self.update()
+
+    #### AbstractTableModel interface ########################################
+
+    def row_count(self, parent=None):
+        if parent is not None:
+            return 0
+        else:
+            return len(self._data)
+
+    def column_count(self, parent=None):
+        return 4
+
+    def horizontal_header_data(self, section):
+        return ('Constraint', 'Error', 'Strength', 'Weight')[section]
+
+    def data(self, index):
+        return self._data[index.row][index.column]
+
+    def alignment(self, index):
+        if index.column in (0, 2):
+            return ALIGN_LEFT | ALIGN_VCENTER
+        else:
+            return ALIGN_RIGHT | ALIGN_VCENTER
+
+    def font(self, index):
+        return TABLE_FONT
+
+    #### ConstraintsModel interface ###########################################
+
+    def update(self):
+        """ Update all of the data.
+
+        """
+        self.begin_reset_model()
+        if self._filter_ids:
+            self.filtered_constraints = []
+            for cn in self.debug_model.constraints:
+                for term in cn.lhs.terms + cn.rhs.terms:
+                    if term.var.name.endswith(self._filter_ids):
+                        self.filtered_constraints.append(cn)
+                        break
+        else:
+            self.filtered_constraints = self.debug_model.constraints
+        self._data = [
+            (unicode(cn),
+             u'{0:.6g}'.format(cn.error) if cn.error > 1e-6 else u'0',
+             unicode(cn.strength.name),
+             unicode(cn.weight),
+            )
+            for cn in self.filtered_constraints
+        ]
+        self.end_reset_model()
+
+    def filter(self):
+        """ Filter the constraint list to only show the constraints
+        belonging to the given components.
+
+        """
+        self._filter_ids = tuple('_{0:x}'.format(id(c))
+            for c in self.debug_model.selected_components)
+        self.update()
+
+
+class DebugContainer(Container):
+    """ Make sure the Container under test does not transfer its
+    ownership to the enaml-debug UI.
+
+    """
+
+    def transfer_layout_ownership(self, owner):
+        return False
 
 
 def debugize_container(container):

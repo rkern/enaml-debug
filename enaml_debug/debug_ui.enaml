@@ -1,16 +1,22 @@
+import casuarius
+from enaml.stdlib.fields import FloatField
+from enaml.layout.geometry import Pos, Rect
 
 from enaml_debug.debug_layout import (ComponentModel, ConstraintsModel,
-    ConstraintsOverlay, DebugLayout, ViewOutlines, debugize_container,
+    ConstraintsOverlay, DebugLayout, DebugModel, ViewOutlines, debugize_container,
     traverse_layout)
+from enaml_debug.persist_geometry import PersistGeometry
 
 
 enamldef Tables(MainWindow):
     id: main
-    attr layout_mgr
-    attr components
-    attr selection_obj
-    attr component_model : ComponentModel = ComponentModel(components)
-    attr constraints_model : ConstraintsModel = ConstraintsModel(layout_mgr)
+    attr model : DebugModel
+    attr initial_pos : Pos
+    attr component_model : ComponentModel = ComponentModel(model)
+    attr constraints_model : ConstraintsModel = ConstraintsModel(model)
+
+    initialized ::
+        self.move(self.initial_pos)
 
     title = u'Components and Constraints'
     Splitter:
@@ -30,7 +36,8 @@ enamldef Tables(MainWindow):
                     self.toolkit_widget.resizeRowsToContents()
                 RowSelectionModel:
                     selection_mode = 'extended'
-                    selected_rows := main.selection_obj.selected_component_indices
+                    selected_rows ::
+                        main.model.selected_components = [main.model.components[i] for i in event.new]
         Container:
             constraints = [
                 vbox(*self.constraints_children),
@@ -46,45 +53,114 @@ enamldef Tables(MainWindow):
                 initialized ::
                     self.toolkit_widget.resizeColumnsToContents()
                     self.toolkit_widget.resizeRowsToContents()
+                activated ::
+                    constraint = main.constraints_model.filtered_constraints[event.new.row]
+                    dlg = UpdateConstraint(strength=constraint.strength, weight=constraint.weight)
+                    dlg.show()
+                    if dlg.result == 'accepted':
+                        solver = root.layout_manager._solver
+                        # Remove the constraint from the solver before adjusting its parameters.
+                        old_autosolve = solver.autosolve
+                        solver.autosolve = False
+                        solver.remove_constraint(constraint)
+                        constraint.strength = dlg.strength
+                        constraint.weight = dlg.weight
+                        solver.add_constraint(constraint)
+                        solver.autosolve = old_autosolve
+                        root.request_refresh()
                 RowSelectionModel:
                     selection_mode = 'extended'
-                    selected_rows := main.selection_obj.selected_constraint_indices
+                    selected_rows ::
+                        main.model.selected_constraints = [main.constraints_model.filtered_constraints[i] for i in event.new]
 
+
+enamldef UpdateConstraint(Dialog):
+    id: dlg
+    attr strength : object
+    attr weight : float
+
+    title = u'Update Constraint'
+
+    Container:
+        constraints = [
+            vbox(form, hbox(spacer, cancel_button, ok_button)),
+        ]
+        Form:
+            id: form
+            Label:
+                text = u'Strength:'
+            ComboBox:
+                items = [casuarius.required, casuarius.strong, casuarius.medium, casuarius.weak]
+                to_string = lambda x: unicode(x.name)
+                value := strength
+            Label:
+                text = u'Weight:'
+            FloatField:
+                value := weight
+        PushButton:
+            id: cancel_button
+            text = u'Cancel'
+            clicked ::
+                dlg.reject()
+        PushButton:
+            id: ok_button
+            text = u'OK'
+            clicked ::
+                dlg.accept()
+
+def get_geometry(debug_layout_ui):
+    """ Get the current window geometries of the top-level windows.
+
+    """
+    geometry = {}
+    try:
+        geometry['main'] = tuple(debug_layout_ui.pos())
+    except Exception:
+        pass
+    try:
+        geometry['main.tables'] = tuple(debug_layout_ui.tables.geometry())
+    except Exception:
+        pass
+    return geometry
+
+def set_main_geometry(debug_layout_ui, geometry):
+    """ Set the top-level window geometries.
+
+    """
+    try:
+        if geometry is not None:
+            main_pos = geometry.get('main', None)
+            if main_pos is not None:
+                debug_layout_ui.move(Pos(*main_pos))
+            main_tables_geom = geometry.get('main.tables', None)
+            if main_tables_geom is not None:
+                r = Rect(*main_tables_geom)
+                debug_layout_ui.tables.initial_pos = r.pos
+                debug_layout_ui.tables.initial_size = r.size
+    except Exception:
+        pass
 
 enamldef DebugLayoutUI(MainWindow):
     id: main
     attr root
-    attr components : list = list(traverse_layout(root))
-    attr view_outlines : ViewOutlines = ViewOutlines.fromcomponents(components)
-    attr tables : Tables = Tables(components=components)
+    attr persist_geometry : PersistGeometry
+    attr model : DebugModel
+    attr tables : Tables
+    attr view_outlines : ViewOutlines = ViewOutlines()
     attr constraints_overlay : ConstraintsOverlay
 
-    attr selected_component_indices : list = []
-    attr selected_components : list = []
-    attr selected_constraint_indices : list = []
-    attr selected_constraints : list = []
-
-    title = 'Debug Layout'
+    title = u'Debug Layout'
 
     initialized ::
-        debugize_container(self.root)
-        self.tables.selection_obj = self
-        self.tables.layout_mgr = self.root.layout_manager
-        self.root.layout_manager.on_trait_change(self.view_outlines.update_from_enaml, 'layout_event')
-        self.root.layout_manager.on_trait_change(self.tables.component_model.update, 'layout_event')
-        self.constraints_overlay = ConstraintsOverlay(component=self.view_outlines, layout_mgr=self.root.layout_manager)
+        # Do not construct the DebugModel until the GUI has been initialized.
+        self.model = DebugModel(root=self.root)
+        self.tables = Tables(model=self.model)
+        self.view_outlines.model = self.model
+        self.constraints_overlay = ConstraintsOverlay(component=self.view_outlines, model=self.model)
         self.view_outlines.overlays.append(self.constraints_overlay)
-
-    selected_component_indices ::
-        self.selected_components = [self.components[i] for i in self.selected_component_indices]
-    selected_components ::
-        self.view_outlines.highlight(self.selected_components)
-        self.tables.constraints_model.filter(self.selected_components)
-
-    selected_constraint_indices ::
-        self.selected_constraints = [self.tables.constraints_model.filtered_constraints[i] for i in self.selected_constraint_indices]
-    selected_constraints ::
-        self.constraints_overlay.selected_constraints = self.selected_constraints
+        if self.persist_geometry is not None:
+            geometry = self.persist_geometry.load()
+            set_main_geometry(self, geometry)
 
     MenuBar:
         Menu:
@@ -96,9 +172,9 @@ enamldef DebugLayoutUI(MainWindow):
 
     Container:
         constraints = [
-            horizontal(left, _space_==0, root, _space_==0, enable_view, _space_==0, right),
-            vertical(top, _space_==0, enable_view, _space_==0, bottom),
-            vertical(top, _space_==0, root, _space_==0, bottom),
+            horizontal(left, 0, root, 0, enable_view, 0, right),
+            vertical(top, 0, enable_view, 0, bottom),
+            vertical(top, 0, root, 0, bottom),
             root.width == enable_view.width,
             root.height == enable_view.height,
         ]
