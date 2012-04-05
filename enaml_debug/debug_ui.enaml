@@ -1,6 +1,7 @@
 import casuarius
 from enaml.stdlib.fields import FloatField
 from enaml.layout.geometry import Pos, Rect
+from enaml.core.base_component import UninitializedAttributeError
 
 from enaml_debug.debug_layout import (ComponentModel, ConstraintsModel,
     ConstraintsOverlay, DebugLayout, DebugModel, ViewOutlines, debugize_container,
@@ -16,7 +17,10 @@ enamldef Tables(MainWindow):
     attr constraints_model : ConstraintsModel = ConstraintsModel(model)
 
     initialized ::
-        self.move(self.initial_pos)
+        try:
+            self.move(self.initial_pos)
+        except UninitializedAttributeError:
+            pass
 
     title = u'Components and Constraints'
     Splitter:
